@@ -584,6 +584,122 @@ def train(model, loss_fn, optimizer, x, y, epochs, batch_size, seed=0):
 # Step 12 - design_network
 import numpy as np
 
+def make_dense(in_dim, out_dim, weight_init_fn):
+    W, b = weight_init_fn(in_dim, out_dim)
+    params = {'W': np.array(W, dtype=np.float64, copy=True),
+              'b': np.array(b, dtype=np.float64, copy=True)}
+    def forward(x):
+        return x @ params['W'] + params['b'], x
+    def backward(dout, cache):
+        return dout @ params['W'].T, {'W': cache.T @ dout, 'b': np.sum(dout, axis=0)}
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+def make_activation(kind='relu'):
+    params = {}
+    if kind == 'relu':
+        def forward(x):
+            return np.maximum(0.0, x), x
+        def backward(dout, cache):
+            return dout * (cache > 0).astype(dout.dtype), {}
+    elif kind == 'tanh':
+        def forward(x):
+            y = np.tanh(x)
+            return y, y
+        def backward(dout, cache):
+            return dout * (1.0 - cache ** 2), {}
+    else:
+        raise ValueError(f"Unsupported kind: {kind}")
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+def initialize_weights(in_dim, out_dim, scheme='he'):
+    std = np.sqrt(2.0 / in_dim) if scheme == 'he' else np.sqrt(2.0 / (in_dim + out_dim))
+    return (np.random.randn(in_dim, out_dim) * std).astype(np.float64), np.zeros(out_dim, dtype=np.float64)
+
+def make_loss(kind='cross_entropy'):
+    def loss_fn(logits, labels):
+        logits = np.asarray(logits, dtype=np.float64)
+        labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+        B = logits.shape[0]
+        shifted = logits - np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(shifted)
+        sum_exp = np.sum(exp_logits, axis=1, keepdims=True)
+        log_probs = shifted - np.log(sum_exp)
+        loss = float(-np.mean(log_probs[np.arange(B), labels]))
+        probs = exp_logits / sum_exp
+        probs[np.arange(B), labels] -= 1.0
+        return loss, probs / B
+    return loss_fn
+
+def make_sequential(layers):
+    params = [layer['params'] for layer in layers]
+    def forward(x):
+        caches, out = [], x
+        for layer in layers:
+            fwd_fn = layer['forward']
+            out, c = fwd_fn(out)
+            caches.append(c)
+        return out, caches
+    def backward(dout, caches):
+        grads_list = []
+        cur_dout = dout
+        for layer, c in zip(reversed(layers), reversed(caches)):
+            bwd_fn = layer['backward']
+            cur_dout, g = bwd_fn(cur_dout, c)
+            grads_list.append(g)
+        grads_list.reverse()
+        return cur_dout, grads_list
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+def forward_backward(model, loss_fn, x, y):
+    fwd_fn = model['forward']
+    logits, caches = fwd_fn(x)
+    loss, d_logits = loss_fn(logits, y)
+    bwd_fn = model['backward']
+    _, param_grads = bwd_fn(d_logits, caches)
+    return float(loss), param_grads
+
+def make_optimizer(params, lr=1e-2, kind='sgd'):
+    if kind != 'sgd':
+        raise ValueError(f"Unsupported optimizer kind: {kind}")
+    opt = {'lr': float(lr), 'kind': kind}
+    def update_rec(p_node, g_node):
+        current_lr = opt.get('lr', lr)
+        if isinstance(p_node, dict) and isinstance(g_node, dict):
+            for k in p_node:
+                if k in g_node:
+                    update_rec(p_node[k], g_node[k])
+        elif isinstance(p_node, (list, tuple)) and isinstance(g_node, (list, tuple)):
+            for p_sub, g_sub in zip(p_node, g_node):
+                update_rec(p_sub, g_sub)
+        elif isinstance(p_node, np.ndarray):
+            p_node -= current_lr * np.asarray(g_node, dtype=p_node.dtype)
+    def step(grads):
+        update_rec(params, grads)
+    opt['step'] = step
+    return opt
+
+def train_step(model, loss_fn, optimizer, x_batch, y_batch):
+    loss, grads = forward_backward(model, loss_fn, x_batch, y_batch)
+    step_fn = optimizer['step']
+    step_fn(grads)
+    return float(loss)
+
+def train(model, loss_fn, optimizer, x, y, epochs, batch_size, seed=0):
+    rng = np.random.RandomState(seed)
+    n = len(x)
+    history = []
+    for epoch in range(epochs):
+        perm = rng.permutation(n)
+        epoch_losses = []
+        for i in range(0, n, batch_size):
+            batch_idx = perm[i:i + batch_size]
+            xb = x[batch_idx]
+            yb = y[batch_idx]
+            l = train_step(model, loss_fn, optimizer, xb, yb)
+            epoch_losses.append(l)
+        history.append(float(np.mean(epoch_losses)))
+    return history
+
 def design_network(input_dim, num_classes, seed=0):
     pts_per_class = 60
     rng = np.random.RandomState(seed)
@@ -617,7 +733,8 @@ def design_network(input_dim, num_classes, seed=0):
     opt = make_optimizer(model['params'], lr=0.1, kind='sgd')
     train(model, loss_fn, opt, x, y, epochs=150, batch_size=16, seed=seed)
 
-    logits, _ = model['forward'](x)
+    fwd_fn = model['forward']
+    logits, _ = fwd_fn(x)
     preds = np.argmax(np.asarray(logits), axis=1)
     acc = float(np.mean(preds == y))
 
