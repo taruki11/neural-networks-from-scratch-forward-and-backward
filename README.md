@@ -17,12 +17,12 @@ python scaffold.py
 - [x] **5.** initialize_weights
 - [x] **6.** make_loss
 - [x] **7.** make_sequential
-- [ ] **8.** forward_backward
-- [ ] **9.** make_optimizer
-- [ ] **10.** train_step
-- [ ] **11.** train
-- [ ] **12.** design_network
-- [ ] **13.** improve_generalization
+- [x] **8.** forward_backward
+- [x] **9.** make_optimizer
+- [x] **10.** train_step
+- [x] **11.** train
+- [x] **12.** design_network
+- [x] **13.** improve_generalization
 
 ---
 

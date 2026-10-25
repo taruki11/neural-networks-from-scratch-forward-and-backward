@@ -152,12 +152,46 @@ def make_loss(kind='cross_entropy'):
     return loss_fn
 
 # Step 7 - make_sequential
+import numpy as np
+
+def make_dense(in_dim, out_dim, weight_init_fn):
+    W, b = weight_init_fn(in_dim, out_dim)
+    params = {'W': np.array(W, dtype=np.float64, copy=True),
+              'b': np.array(b, dtype=np.float64, copy=True)}
+
+    def forward(x):
+        return x @ params['W'] + params['b'], x
+
+    def backward(dout, cache):
+        dx = dout @ params['W'].T
+        dW = cache.T @ dout
+        db = np.sum(dout, axis=0)
+        return dx, {'W': dW, 'b': db}
+
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+def make_activation(kind='relu'):
+    params = {}
+    if kind == 'relu':
+        def forward(x):
+            return np.maximum(0.0, x), x
+        def backward(dout, cache):
+            return dout * (cache > 0).astype(dout.dtype), {}
+    elif kind == 'tanh':
+        def forward(x):
+            y = np.tanh(x)
+            return y, y
+        def backward(dout, cache):
+            return dout * (1.0 - cache ** 2), {}
+    else:
+        raise ValueError(f"Unsupported kind: {kind}")
+    return {'forward': forward, 'backward': backward, 'params': params}
+
 def make_sequential(layers):
     params = [layer['params'] for layer in layers]
 
     def forward(x):
-        caches = []
-        out = x
+        caches, out = [], x
         for layer in layers:
             out, c = layer['forward'](out)
             caches.append(c)
@@ -167,28 +201,165 @@ def make_sequential(layers):
         grads_list = []
         cur_dout = dout
         for layer, c in zip(reversed(layers), reversed(caches)):
-            cur_dout, g = layer['backward'](<cur_dout, c>)
+            b_func = layer['backward']
+            cur_dout, g = b_func(cur_dout, c)
             grads_list.append(g)
         grads_list.reverse()
         return cur_dout, grads_list
 
     return {'forward': forward, 'backward': backward, 'params': params}
 
-# Step 8 - forward_backward (not yet solved)
-# TODO: implement
+# Step 8 - forward_backward
+def forward_backward(model, loss_fn, x, y):
+    logits, caches = model['forward'](x)
+    loss, d_logits = loss_fn(logits, y)
+    _, param_grads = model['backward'](<d_logits, caches>)
+    return float(loss), param_grads
 
-# Step 9 - make_optimizer (not yet solved)
-# TODO: implement
+# Step 9 - make_optimizer
+import numpy as np
 
-# Step 10 - train_step (not yet solved)
-# TODO: implement
+def make_optimizer(params, lr=1e-2, kind='sgd'):
+    if kind != 'sgd':
+        raise ValueError(f"Unsupported optimizer kind: {kind}")
 
-# Step 11 - train (not yet solved)
-# TODO: implement
+    def update_rec(p_node, g_node):
+        if isinstance(p_node, dict):
+            for k in p_node:
+                if k in g_node:
+                    update_rec(p_node[k], g_node[k])
+        elif isinstance(p_node, list):
+            for p_sub, g_sub in zip(p_node, g_node):
+                update_rec(p_sub, g_sub)
+        elif isinstance(p_node, np.ndarray):
+            p_node -= lr * g_node
 
-# Step 12 - design_network (not yet solved)
-# TODO: implement
+    def step(grads):
+        update_rec(params, grads)
 
-# Step 13 - improve_generalization (not yet solved)
-# TODO: implement
+    return {'step': step, 'lr': lr, 'kind': kind}
+
+# Step 10 - train_step
+def train_step(model, loss_fn, optimizer, x_batch, y_batch):
+    loss, grads = forward_backward(model, loss_fn, x_batch, y_batch)
+    optimizer['step'](grads)
+    return float(loss)
+
+# Step 11 - train
+import numpy as np
+
+def train(model, loss_fn, optimizer, x, y, epochs, batch_size, seed=0):
+    rng = np.random.RandomState(seed)
+    n = len(x)
+    history = []
+    for epoch in range(epochs):
+        perm = rng.permutation(n)
+        epoch_losses = []
+        for i in range(0, n, batch_size):
+            batch_idx = perm[i:i + batch_size]
+            xb = x[batch_idx]
+            yb = y[batch_idx]
+            l = train_step(model, loss_fn, optimizer, xb, yb)
+            epoch_losses.append(l)
+        history.append(float(np.mean(epoch_losses)))
+    return history
+
+# Step 12 - design_network
+import numpy as np
+
+def design_network(input_dim, num_classes, seed=0):
+    pts_per_class = 60
+    rng = np.random.RandomState(seed)
+    xs, ys = [], []
+    for c in range(num_classes):
+        r_base = 1.0 + 1.8 * c
+        v = rng.randn(pts_per_class, input_dim)
+        norms = np.linalg.norm(v, axis=1, keepdims=True) + 1e-10
+        u = v / norms
+        r = r_base + rng.uniform(-0.2, 0.2, size=(pts_per_class, 1))
+        xc = u * r
+        xs.append(xc)
+        ys.append(np.full(pts_per_class, c, dtype=np.int64))
+    x = np.concatenate(xs, axis=0)
+    y = np.concatenate(ys, axis=0)
+    perm = rng.permutation(len(y))
+    x, y = x[perm], y[perm]
+
+    def init_fn(i, o):
+        return initialize_weights(i, o, scheme='he')
+
+    layers = [
+        make_dense(input_dim, 64, init_fn),
+        make_activation('relu'),
+        make_dense(64, 64, init_fn),
+        make_activation('relu'),
+        make_dense(64, num_classes, init_fn),
+    ]
+    model = make_sequential(layers)
+    loss_fn = make_loss('cross_entropy')
+    opt = make_optimizer(model['params'], lr=0.1, kind='sgd')
+    train(model, loss_fn, opt, x, y, epochs=150, batch_size=16, seed=seed)
+
+    logits, _ = model['forward'](x)
+    preds = np.argmax(np.asarray(logits), axis=1)
+    acc = float(np.mean(preds == y))
+
+    metrics = {
+        'accuracy': acc,
+        'x': x,
+        'y': y
+    }
+    return model, metrics
+
+# Step 13 - improve_generalization
+import numpy as np
+
+def improve_generalization(baseline_model_fn, x_train, y_train, x_val, y_val, seed=0):
+    # 1. 评估无正则化基线模型
+    base_model = baseline_model_fn()
+    base_loss_fn = make_loss('cross_entropy')
+    base_params = base_model['params']
+    def base_step(grads):
+        for p, g in zip(base_params, grads):
+            if isinstance(p, dict) and isinstance(g, dict):
+                for k in p:
+                    if k in g and isinstance(p[k], np.ndarray):
+                        p[k] -= 0.05 * np.asarray(g[k], dtype=p[k].dtype)
+            elif isinstance(p, np.ndarray):
+                p -= 0.05 * np.asarray(g, dtype=p.dtype)
+    base_opt = {'step': base_step, 'lr': 0.05, 'kind': 'sgd'}
+    train(base_model, base_loss_fn, base_opt, x_train, y_train, epochs=70, batch_size=16, seed=seed)
+    base_logits, _ = base_model['forward'](x_val)
+    base_preds = np.argmax(np.asarray(base_logits), axis=1)
+    baseline_val_accuracy = float(np.mean(base_preds == y_val))
+
+    # 2. 训练改进模型（引入权重衰减 + 早停控制）
+    model = baseline_model_fn()
+    loss_fn = make_loss('cross_entropy')
+    lr = 0.05
+    decay = 0.03
+    params = model['params']
+    def step(grads):
+        for p, g in zip(params, grads):
+            if isinstance(p, dict) and isinstance(g, dict):
+                for k in p:
+                    if k in g and isinstance(p[k], np.ndarray):
+                        if k == 'W':
+                            p[k] *= (1.0 - lr * decay)
+                        p[k] -= lr * np.asarray(g[k], dtype=p[k].dtype)
+            elif isinstance(p, np.ndarray):
+                p -= lr * np.asarray(g, dtype=p.dtype)
+
+    opt = {'step': step, 'lr': lr, 'kind': 'sgd'}
+    train(model, loss_fn, opt, x_train, y_train, epochs=45, batch_size=16, seed=seed)
+    logits, _ = model['forward'](x_val)
+    predictions = np.argmax(np.asarray(logits), axis=1).astype(int)
+    val_accuracy = float(np.mean(predictions == y_val))
+
+    return {
+        'val_accuracy': val_accuracy,
+        'baseline_val_accuracy': baseline_val_accuracy,
+        'predictions': predictions,
+        'model': model
+    }
 
