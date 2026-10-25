@@ -335,9 +335,131 @@ def make_optimizer(params, lr=1e-2, kind='sgd'):
     return opt
 
 # Step 10 - train_step
+import numpy as np
+
+def numerical_gradient(f, x, eps=1e-5):
+    grad = np.zeros_like(x, dtype=np.float64)
+    if x.size == 0:
+        return grad
+    it = np.nditer(x, flags=['multi_index'], op_flags=['readwrite'])
+    while not it.finished:
+        idx = it.multi_index
+        orig_val = x[idx]
+        x[idx] = orig_val + eps
+        f_plus = f(x)
+        x[idx] = orig_val - eps
+        f_minus = f(x)
+        x[idx] = orig_val
+        grad[idx] = (f_plus - f_minus) / (2.0 * eps)
+        it.iternext()
+    return grad
+
+def gradient_check(analytic_grad, numeric_grad, tol=1e-5):
+    a = np.asarray(analytic_grad, dtype=np.float64)
+    n = np.asarray(numeric_grad, dtype=np.float64)
+    if a.size == 0:
+        return 0.0
+    denom = np.maximum(np.maximum(np.abs(a), np.abs(n)), tol)
+    return float(np.max(np.abs(a - n) / denom))
+
+def make_dense(in_dim, out_dim, weight_init_fn):
+    W, b = weight_init_fn(in_dim, out_dim)
+    params = {'W': np.array(W, dtype=np.float64, copy=True),
+              'b': np.array(b, dtype=np.float64, copy=True)}
+    def forward(x):
+        return x @ params['W'] + params['b'], x
+    def backward(dout, cache):
+        return dout @ params['W'].T, {'W': cache.T @ dout, 'b': np.sum(dout, axis=0)}
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+def make_activation(kind='relu'):
+    params = {}
+    if kind == 'relu':
+        def forward(x):
+            return np.maximum(0.0, x), x
+        def backward(dout, cache):
+            return dout * (cache > 0).astype(dout.dtype), {}
+    elif kind == 'tanh':
+        def forward(x):
+            y = np.tanh(x)
+            return y, y
+        def backward(dout, cache):
+            return dout * (1.0 - cache ** 2), {}
+    else:
+        raise ValueError(f"Unsupported kind: {kind}")
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+def initialize_weights(in_dim, out_dim, scheme='he'):
+    std = np.sqrt(2.0 / in_dim) if scheme == 'he' else np.sqrt(2.0 / (in_dim + out_dim))
+    return (np.random.randn(in_dim, out_dim) * std).astype(np.float64), np.zeros(out_dim, dtype=np.float64)
+
+def make_loss(kind='cross_entropy'):
+    def loss_fn(logits, labels):
+        logits = np.asarray(logits, dtype=np.float64)
+        labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+        B = logits.shape[0]
+        shifted = logits - np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(shifted)
+        sum_exp = np.sum(exp_logits, axis=1, keepdims=True)
+        log_probs = shifted - np.log(sum_exp)
+        loss = float(-np.mean(log_probs[np.arange(B), labels]))
+        probs = exp_logits / sum_exp
+        probs[np.arange(B), labels] -= 1.0
+        return loss, probs / B
+    return loss_fn
+
+def make_sequential(layers):
+    params = [layer['params'] for layer in layers]
+    def forward(x):
+        caches, out = [], x
+        for layer in layers:
+            fwd_fn = layer['forward']
+            out, c = fwd_fn(out)
+            caches.append(c)
+        return out, caches
+    def backward(dout, caches):
+        grads_list = []
+        cur_dout = dout
+        for layer, c in zip(reversed(layers), reversed(caches)):
+            bwd_fn = layer['backward']
+            cur_dout, g = bwd_fn(cur_dout, c)
+            grads_list.append(g)
+        grads_list.reverse()
+        return cur_dout, grads_list
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+def forward_backward(model, loss_fn, x, y):
+    fwd_fn = model['forward']
+    logits, caches = fwd_fn(x)
+    loss, d_logits = loss_fn(logits, y)
+    bwd_fn = model['backward']
+    _, param_grads = bwd_fn(d_logits, caches)
+    return float(loss), param_grads
+
+def make_optimizer(params, lr=1e-2, kind='sgd'):
+    if kind != 'sgd':
+        raise ValueError(f"Unsupported optimizer kind: {kind}")
+    opt = {'lr': float(lr), 'kind': kind}
+    def update_rec(p_node, g_node):
+        current_lr = opt.get('lr', lr)
+        if isinstance(p_node, dict) and isinstance(g_node, dict):
+            for k in p_node:
+                if k in g_node:
+                    update_rec(p_node[k], g_node[k])
+        elif isinstance(p_node, (list, tuple)) and isinstance(g_node, (list, tuple)):
+            for p_sub, g_sub in zip(p_node, g_node):
+                update_rec(p_sub, g_sub)
+        elif isinstance(p_node, np.ndarray):
+            p_node -= current_lr * np.asarray(g_node, dtype=p_node.dtype)
+    def step(grads):
+        update_rec(params, grads)
+    opt['step'] = step
+    return opt
+
 def train_step(model, loss_fn, optimizer, x_batch, y_batch):
     loss, grads = forward_backward(model, loss_fn, x_batch, y_batch)
-    optimizer['step'](grads)
+    step_fn = optimizer['step']
+    step_fn(grads)
     return float(loss)
 
 # Step 11 - train
