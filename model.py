@@ -317,9 +317,7 @@ import numpy as np
 def make_optimizer(params, lr=1e-2, kind='sgd'):
     if kind != 'sgd':
         raise ValueError(f"Unsupported optimizer kind: {kind}")
-
     opt = {'lr': float(lr), 'kind': kind}
-
     def update_rec(p_node, g_node):
         current_lr = opt.get('lr', lr)
         if isinstance(p_node, dict) and isinstance(g_node, dict):
@@ -331,10 +329,8 @@ def make_optimizer(params, lr=1e-2, kind='sgd'):
                 update_rec(p_sub, g_sub)
         elif isinstance(p_node, np.ndarray):
             p_node -= current_lr * np.asarray(g_node, dtype=p_node.dtype)
-
     def step(grads):
         update_rec(params, grads)
-
     opt['step'] = step
     return opt
 
