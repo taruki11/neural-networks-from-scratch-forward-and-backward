@@ -38,11 +38,70 @@ def gradient_check(analytic_grad, numeric_grad, tol=1e-5):
     rel_err = np.abs(a - n) / denom
     return float(np.max(rel_err))
 
-# Step 3 - make_dense (not yet solved)
-# TODO: implement
+# Step 3 - make_dense
+import numpy as np
 
-# Step 4 - make_activation (not yet solved)
-# TODO: implement
+def make_dense(in_dim, out_dim, weight_init_fn):
+    W, b = weight_init_fn(in_dim, out_dim)
+    params = {
+        'W': np.array(W, dtype=np.float64, copy=True),
+        'b': np.array(b, dtype=np.float64, copy=True)
+    }
+
+    def forward(x):
+        cache = x
+        y = x @ params['W'] + params['b']
+        return y, cache
+
+    def backward(dout, cache):
+        x = cache
+        dx = dout @ params['W'].T
+        dW = x.T @ dout
+        db = np.sum(dout, axis=0)
+        return dx, {'W': dW, 'b': db}
+
+    return {'forward': forward, 'backward': backward, 'params': params}
+
+# Step 4 - make_activation
+import numpy as np
+
+def make_activation(kind='relu'):
+    params = {}
+
+    if kind == 'relu':
+        def forward(x):
+            cache = x
+            y = np.maximum(0.0, x)
+            return y, cache
+
+        def backward(dout, cache):
+            x = cache
+            dx = dout * (x > 0).astype(dout.dtype)
+            return dx, {}
+    elif kind == 'tanh':
+        def forward(x):
+            y = np.tanh(x)
+            cache = y
+            return y, cache
+
+        def backward(dout, cache):
+            y = cache
+            dx = dout * (1.0 - y ** 2)
+            return dx, {}
+    elif kind == 'sigmoid':
+        def forward(x):
+            y = 1.0 / (1.0 + np.exp(-x))
+            cache = y
+            return y, cache
+
+        def backward(dout, cache):
+            y = cache
+            dx = dout * y * (1.0 - y)
+            return dx, {}
+    else:
+        raise ValueError(f"Unsupported activation kind: {kind}")
+
+    return {'forward': forward, 'backward': backward, 'params': params}
 
 # Step 5 - initialize_weights (not yet solved)
 # TODO: implement
