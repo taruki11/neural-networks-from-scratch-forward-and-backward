@@ -118,11 +118,61 @@ def initialize_weights(in_dim, out_dim, scheme='he'):
     b = np.zeros(out_dim, dtype=np.float64)
     return W.astype(np.float64), b
 
-# Step 6 - make_loss (not yet solved)
-# TODO: implement
+# Step 6 - make_loss
+import numpy as np
 
-# Step 7 - make_sequential (not yet solved)
-# TODO: implement
+def make_loss(kind='cross_entropy'):
+    if kind != 'cross_entropy':
+        raise ValueError(f"Unsupported loss: {kind}")
+
+    def loss_fn(logits, labels):
+        logits = np.asarray(logits, dtype=np.float64)
+        labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+        batch_size = logits.shape[0]
+
+        # Log-sum-exp 保证数值稳定性
+        max_logits = np.max(logits, axis=1, keepdims=True)
+        shifted_logits = logits - max_logits
+        exp_logits = np.exp(shifted_logits)
+        sum_exp = np.sum(exp_logits, axis=1, keepdims=True)
+        log_probs = shifted_logits - np.log(sum_exp)
+
+        # 批次平均交叉熵
+        correct_log_probs = log_probs[np.arange(batch_size), labels]
+        loss = float(-np.mean(correct_log_probs))
+
+        # Softmax 概率分布与梯度
+        probs = exp_logits / sum_exp
+        d_logits = probs.copy()
+        d_logits[np.arange(batch_size), labels] -= 1.0
+        d_logits /= batch_size
+
+        return loss, d_logits
+
+    return loss_fn
+
+# Step 7 - make_sequential
+def make_sequential(layers):
+    params = [layer['params'] for layer in layers]
+
+    def forward(x):
+        caches = []
+        out = x
+        for layer in layers:
+            out, c = layer['forward'](out)
+            caches.append(c)
+        return out, caches
+
+    def backward(dout, caches):
+        grads_list = []
+        cur_dout = dout
+        for layer, c in zip(reversed(layers), reversed(caches)):
+            cur_dout, g = layer['backward'](<cur_dout, c>)
+            grads_list.append(g)
+        grads_list.reverse()
+        return cur_dout, grads_list
+
+    return {'forward': forward, 'backward': backward, 'params': params}
 
 # Step 8 - forward_backward (not yet solved)
 # TODO: implement
